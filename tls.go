@@ -158,6 +158,33 @@ func Value(vals ...byte) (value int) {
 	return
 }
 
+
+// selectRealityAuthPublicKey selects the X25519 key used for REALITY authentication.
+// Match Xray clients: prefer the standalone X25519 key share, falling back to
+// the X25519 component of X25519MLKEM768. Key share order does not matter.
+// Reject duplicate or malformed supported key shares.
+func selectRealityAuthPublicKey(shares []keyShare) []byte {
+	var x25519, hybridX25519 []byte
+	for _, share := range shares {
+		switch share.group {
+		case X25519:
+			if x25519 != nil || len(share.data) != 32 {
+				return nil
+			}
+			x25519 = share.data
+		case X25519MLKEM768:
+			if hybridX25519 != nil || len(share.data) != mlkem.EncapsulationKeySize768+32 {
+				return nil
+			}
+			hybridX25519 = share.data[mlkem.EncapsulationKeySize768:]
+		}
+	}
+	if x25519 != nil {
+		return x25519
+	}
+	return hybridX25519
+}
+
 // You MUST call `DetectPostHandshakeRecordsLens(config)` in advance manually
 // if you don't use REALITY's listener, e.g., Xray-core's RAW transport.
 func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
@@ -212,31 +239,7 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 			if copying || err != nil || hs.c.vers != VersionTLS13 || !config.ServerNames[hs.clientHello.serverName] {
 				break
 			}
-			var peerPub, peerPub2 []byte
-			for _, keyShare := range hs.clientHello.keyShares {
-				if keyShare.group == X25519MLKEM768 && len(keyShare.data) == mlkem.EncapsulationKeySize768+32 {
-					if peerPub2 != nil {
-						peerPub2 = nil // ensure fail
-						break          // ensure once
-					}
-					peerPub2 = keyShare.data[mlkem.EncapsulationKeySize768:]
-					continue // fast continue
-				}
-				if keyShare.group == X25519 && len(keyShare.data) == 32 {
-					if peerPub != nil {
-						peerPub2 = nil // ensure fail
-						break          // ensure once
-					}
-					peerPub = keyShare.data
-					break // ensure order
-				}
-			}
-			if peerPub2 == nil {
-				break // reject outdated/strange Client Hello that doesn't have X25519MLKEM768 before optional X25519
-			}
-			if peerPub == nil {
-				peerPub = peerPub2 // secondary choice: X25519 in X25519MLKEM768
-			}
+			peerPub := selectRealityAuthPublicKey(hs.clientHello.keyShares)
 			for peerPub != nil && config.PrivateKey != nil {
 				peerKey, err := ecdh.X25519().NewPublicKey(peerPub)
 				if err != nil {
