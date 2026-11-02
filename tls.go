@@ -213,26 +213,26 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				break
 			}
 			var peerPub, peerPub2 []byte
+			invalidKeyShare := false
 			for _, keyShare := range hs.clientHello.keyShares {
 				if keyShare.group == X25519MLKEM768 && len(keyShare.data) == mlkem.EncapsulationKeySize768+32 {
 					if peerPub2 != nil {
-						peerPub2 = nil // ensure fail
-						break          // ensure once
+						invalidKeyShare = true // ensure fail
+						break                 // ensure once
 					}
 					peerPub2 = keyShare.data[mlkem.EncapsulationKeySize768:]
 					continue // fast continue
 				}
 				if keyShare.group == X25519 && len(keyShare.data) == 32 {
 					if peerPub != nil {
-						peerPub2 = nil // ensure fail
-						break          // ensure once
+						invalidKeyShare = true // ensure fail
+						break                 // ensure once
 					}
 					peerPub = keyShare.data
-					break // ensure order
 				}
 			}
-			if peerPub2 == nil {
-				break // reject outdated/strange Client Hello that doesn't have X25519MLKEM768 before optional X25519
+			if invalidKeyShare || (peerPub == nil && peerPub2 == nil) {
+				break
 			}
 			if peerPub == nil {
 				peerPub = peerPub2 // secondary choice: X25519 in X25519MLKEM768
